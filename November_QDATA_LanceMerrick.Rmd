@@ -1,0 +1,892 @@
+---
+title: "November Project"
+author: "Lance Merrick"
+output: pdf_document
+---
+```{r, include=FALSE}
+knitr::opts_chunk$set(message=F,warning=F,echo=T,fig_height=10,fig_width=7,cache = F)
+```
+
+
+```{r, include=FALSE}
+#libraries
+if (!require("pacman")) install.packages("pacman")
+pacman::p_load(readxl,corrplot,dplyr,tidyr,ggplot2,Matrix,multcomp,Hmisc,minque,mlbench,ipred,boot,knitr,MASS,mgcv,gridExtra,DAAG,outliers,MESS,tidyverse,agricolae,broom,stats,psych,readr,vcd,PerformanceAnalytics,DescTools,lmerTest,lme4,lattice,lmtest,plyr,qpcR,data.table)
+#file.choose()
+qdata=read.csv("C:\\Users\\lance.merrick\\OneDrive - Washington State University (email.wsu.edu)\\Documents\\Plant Breeding Journal and R Club\\Quality Project\\qual_SE_16-18.csv",header=TRUE)
+```
+
+# Western Wheat Quality Lab Data
+
+### Questions:
+
+My main question is to what extent can we use early generation traits to predict the Milling and product traits.
+
+What are the correlations among the traits?  
+
+What are the heritabilities?
+
+How does the variation due to environment differ among the traits?
+
+Are there any pedigrees that perform particularly well or particularly bad?  Any clusters?
+
+What should I select?  A good club wheat has high cake volume, low gluten strength, high test weight, high break flour and high flour yield.  Our stakeholders have asked me to increase kernel size and test weight and reduce LDOPA as well.  Can you make any suggestions for crosses that I might want to make?
+
+# Data Exploration
+
+## Structure
+```{r,warning=FALSE,message=FALSE}
+str(qdata)
+#We need to convert most of the description variables to factors
+qdata$NURSCO=as.factor(qdata$NURSCO)
+qdata$SAMPLE=as.factor(qdata$SAMPLE)
+qdata$entry=as.factor(qdata$entry)
+qdata$year1=as.factor(qdata$year1)
+qdata$year0=as.factor(qdata$year0)
+```
+
+## Summary
+### Summary of the Description Variables
+```{r,warning=FALSE,message=FALSE}
+summary(qdata[,1:11])
+```
+
+### Summary of Variables
+```{r}
+#The describe function reteurns typical statistical description measurements including skew and kurtosis which are measurements of the distribution of the data.
+describe(qdata[,12:35])
+```
+
+
+## Change WALLA WALLA
+
+```{r,warning=FALSE,message=FALSE}
+#The variable for the WALLA WALLA location is not constant. 
+levels(qdata$LOCATION)
+levels(qdata$LOCATION)[5] <-"WALLA WALLA" #You can simply rename the levels in a dataset. This renames the fift location level which is WALLA.WALLA and replaces it with WALLA WALL.
+levels(qdata$LOCATION)
+```
+
+## Histograms and Distribution
+
+```{r,warning=FALSE,message=FALSE}
+#I like this function from the package psych, because it displays histograms, scatterplots and correlations in the same graph.
+pairs.panels(qdata[,12:14])
+pairs.panels(qdata[,15:21])
+pairs.panels(qdata[,22:30])
+pairs.panels(qdata[,31:33])
+pairs.panels(qdata[,32:35])
+pairs.panels(qdata[,31:35])
+```
+
+
+### Histograms
+```{r,warning=FALSE,message=FALSE}
+#Loop function "lapply" to output histograms for every trait
+#lapply apply a function to a list and is an easy option that reduces the memory requirement as compared to regular loops and thus can be appplied to large datasets without taking a long time.
+par(mfrow=c(2,2))
+outs=lapply(names(qdata[,12:35]), function(x) hist(qdata[[x]],data=qdata,main="Histogram of Quality Trait",xlab=as.character(x),las=1.5)$out)
+```
+
+### Transformations examples
+```{r,warning=FALSE,message=FALSE}
+#It is important to explore the distributions of the data you are exploring. The distribution is vital when creating models. Each model as specific assumptions, and therefore need to be followed.
+par(mfrow=c(1,2))
+hist(qdata$microsd)
+hist(log(qdata$microsd))
+hist(sqrt(qdata$microsd+10))
+hist(log(qdata$microsd^2))
+hist(log(qdata$microsd+10))
+```
+
+### Problem is with data
+```{r,warning=FALSE,message=FALSE}
+#The problem with this dataset was that the NA's are actually displayed as -9.0. Dr. Campbell replaced most of them. But for the microsd data, a few were still left in. Once these were removed, the distribution appeared less skewed.
+qdata$microsd
+qdata <- qdata %>% mutate(microsd = replace(microsd, microsd == -9.0, NA))
+qdata$microsd
+hist(qdata$microsd)
+```
+
+
+
+## Frequency Tables
+```{r,warning=FALSE,message=FALSE}
+#I explored the frequencies of the tvarious location year combinations. It revealed that most of the lines were in the Soft elite trial in Pendeleton.
+tbl <- xtabs(~LOCATION+year0, qdata)
+ftable(tbl)
+tbl1 <- xtabs(~LOCATION+year1, qdata)
+ftable(tbl1)
+tbl2 <- xtabs(~NURNAME+LOCATION, qdata)
+ftable(tbl2)
+tbl3 <- xtabs(~NURNAME+year0, qdata)
+ftable(tbl3)
+```
+
+
+# Boxplots
+
+## Distribution for traits in different locations
+```{r,warning=FALSE,message=FALSE,fig.width=12,fig.height=10}
+#I did the same thing here as I did for the histograms, but had it divide out per location
+par(mfrow=c(2,2))
+#par(mar = c(2, 2, 2, 2) + 0.1)
+outs=lapply(names(qdata[,12:35]), function(x) boxplot(formula(paste0(x,"~LOCATION")),data=qdata,main=as.character(x),las=1.5)$out)
+```
+
+## Distribution for traits in different years
+```{r,warning=FALSE,messge=FALSE,fig.width=10,fig.height=6}
+#This is the same as above but just for years.
+par(mfrow=c(2,2))
+outs=lapply(names(qdata[,12:35]), function(x) boxplot(formula(paste0(x,"~year1")),data=qdata,main=as.character(x),las=1.5)$out)
+```
+
+
+
+# Statistical Analyses and Interpretation
+
+## What are the correlations among the traits? 
+
+### Corrplot and correlations
+```{r,warning=FALSE,message=FALSE}
+#Overall
+#This correlation function can not run with NAs and therefore, "na.or.complete" must be specified.
+qdoverall=cor(qdata[,12:35],use="na.or.complete")
+#I subsetted the correlation output to focus on the early vs late trait correlations
+qdoverall[1:19,20:24]
+corrplot(qdoverall[1:19,20:24])
+```
+
+Correlations primarily between the early generation to later generation
+
+### Heatmap for correlations
+
+```{r,warning=FALSE,message=FALSE}
+#tThis is a heat map that also overlays a hierarchical clustering tree
+col<- colorRampPalette(c("blue", "white", "red"))(20)
+heatmap(x = qdoverall, col = col, symm = TRUE)
+```
+
+### Subsetting for Soft Elites in Pendleton
+
+```{r,warning=FALSE,message=FALSE}
+#I subsetted the pendleton location for just the elite soft trial to take a different look at the models and compare to the whole dataset
+summary(qdata$NURNAME)
+summary(qdata$LOCATION)
+qdse<-subset(qdata,qdata$NURNAME==levels(qdata$NURNAME)[7]) #This is subsetting for the 7th level which is Soft elite
+summary(qdse$NURNAME)
+summary(qdse$LOCATION)
+tbl <- xtabs(~LOCATION+year0, qdse)
+ftable(tbl)
+qdsep<-subset(qdse,qdse$LOCATION==levels(qdse$LOCATION)[2]) #This further subsets the data to just the pendleton location
+qdsep$NURSCO=as.factor(qdsep$NURSCO)
+qdsep$SAMPLE=as.factor(qdsep$SAMPLE)
+qdsep$entry=as.factor(qdsep$entry)
+qdsep$year1=as.factor(qdsep$year1)
+qdsep$year0=as.factor(qdsep$year0)
+```
+
+Extra validation will be done for the lines present in the Soft elite lines in Pendleton due to the vast majority of lines being present in this location and nursery.
+
+## What are the heritabilities?
+
+\begin{align*}
+p(X)  &= \frac{V_g}{V_g+\frac{V_{gxyear}}{N_{year}}+\frac{V_{gxloc}}{N_{loc}}+\frac{V_e}{(N_{loc}) (N_{year})}} 
+\end{align*}
+
+Different verson of mixed models will be used to determine best model for BLUPs and most accurate heritabilities.
+
+### Lme4
+
+#### Mixed Model for Line, Location, Year and with no interactions.
+```{r,warning=FALSE,message=FALSE}
+#I used the same lapply function to create a list of models 
+#this model takes the variables for line, location, and year with no interaction effects
+models4 <- lapply(names(qdata[,12:35]), function(x) lmer(formula(paste0(x, "~(1|NAMET)*(1|LOCATION)*(1|year0)")), data=qdata))
+names(models4)<-names(qdata[,12:35])
+
+#I wrote a loop using the VarCorr function to subset the variance components from each model
+#This heritability using the variance components for line, location, and year and divides the year, location, and residual variance by the number of levels it has.
+hert1=c()
+for(i in 1:length(models4)){
+  x=models4[[i]]
+  x=(as.data.frame(VarCorr(x))[,c(1,4)][1,2]/ #it goes through and creates a dataframe for the name and variance component
+  (as.data.frame(VarCorr(x))[,c(1,4)][1,2]+
+     (as.data.frame(VarCorr(x))[,c(1,4)][2,2]/4)+
+     (as.data.frame(VarCorr(x))[,c(1,4)][3,2]/4)+
+     (as.data.frame(VarCorr(x))[,c(1,4)][4,2]/16)))*100
+  x=as.numeric(x)
+  hert1=c(hert1,x)
+}
+
+
+hert1=cbind(names(models4),round(hert1,5))
+hert1=as.data.frame(hert1)
+names(hert1)<-c("Trait","Heritability")
+hert1$Heritability=as.numeric(as.character(hert1$Heritability))
+barchart(Trait~Heritability,data=hert1)
+hert1
+```
+
+#### Mixed Model for Line, Location, Year and interactions.
+
+Mean-line basis version of heritability 
+
+```{r,warning=FALSE,message=FALSE}
+library(lme4)
+#This model is the same as above, but includes the interaction effects in order to calculate the mean-line basis heritability that is commonly used in multi-environment trials.
+models41 <- lapply(names(qdata[,12:35]), function(x) lmer(formula(paste0(x, 
+            "~(1|NAMET)+(1|LOCATION)+(1|year0)+(1|NAMET:LOCATION)+(1|NAMET:year0)")), data=qdata))
+names(models41)<-names(qdata[,12:35])
+an<-list()
+for(i in 1:length(models41)){
+   x=models41[[i]]
+   y=models4[[i]]
+   z=as.data.frame(anova(x,y))
+   name=names(models41[i])
+   an[[name]]=z
+}
+
+#This is the same thing as above, but each interaction effect is used instead of the explicit year and location component. This is the heritability shown in the equation created above.
+hert11=c()
+for(i in 1:length(models41)){
+  x=models41[[i]]
+  x=(as.data.frame(VarCorr(x))[,c(1,4)][3,2]/
+  (as.data.frame(VarCorr(x))[,c(1,4)][3,2]+
+     (as.data.frame(VarCorr(x))[,c(1,4)][1,2]/4)+
+     (as.data.frame(VarCorr(x))[,c(1,4)][2,2]/4)+
+     (as.data.frame(VarCorr(x))[,c(1,4)][6,2]/16)))*100
+  x=as.numeric(x)
+  hert11=c(hert11,x)
+}
+
+hert11=cbind(names(models41),round(hert11,5))
+hert11=as.data.frame(hert11)
+names(hert11)<-c("Trait","Heritability")
+hert11$Heritability=as.numeric(as.character(hert11$Heritability))
+barchart(Trait~Heritability,data=hert11)
+hert11
+```
+
+
+#### Environment Variable
+
+Mixed Model for Line, Location, Year and interactions but the location and year is combined into an environment variable
+
+```{r,warning=FALSE,message=FALSE}
+#This is the same as previous models but the location and year variables are combined into a specific environment variable
+qdata$ENV2=paste(qdata$year0,qdata$LOCATION,sep=":")
+qdata=transform(qdata, ENV2=factor(ENV2))
+models44 <- lapply(names(qdata[,12:35]), function(x) lmer(formula(paste0(x, 
+            "~(1|NAMET)+(1|ENV2)+(1|NAMET:ENV2)")), data=qdata))
+names(models44)<-names(qdata[,12:35])
+
+an4<-list()
+for(i in 1:length(models44)){
+   x=models41[[i]]
+   y=models44[[i]]
+   z=as.data.frame(anova(x,y))
+   name=names(models44[i])
+   an4[[name]]=z
+}
+
+hert14=c()
+for(i in 1:length(models44)){
+  x=models44[[i]]
+  x=(as.data.frame(VarCorr(x))[,c(1,4)][2,2]/
+  (as.data.frame(VarCorr(x))[,c(1,4)][2,2]+
+     (as.data.frame(VarCorr(x))[,c(1,4)][1,2]/10)+
+     (as.data.frame(VarCorr(x))[,c(1,4)][4,2]/10)))*100
+  x=as.numeric(x)
+  hert14=c(hert14,x)
+}
+
+hert14=cbind(names(models44),round(hert14,5))
+hert14=as.data.frame(hert14)
+names(hert14)<-c("Trait","Heritability")
+hert14$Heritability=as.numeric(as.character(hert14$Heritability))
+barchart(Trait~Heritability,data=hert14)
+hert14
+```
+
+### Mean-line basis (Soft Elite and Pendleton Subset)
+
+```{r,warning=FALSE,message=FALSE}
+#This is the mean-line basis model but for the subsetted soft elite pendleton lines
+qdsep=droplevels(qdsep)
+models45 <- lapply(names(qdsep[,12:35]), function(x) lmer(formula(paste0(x, 
+            "~(1|NAMET)+(1|year0)")), data=qdsep))
+names(models45)<-names(qdsep[,12:35])
+hert15=c()
+for(i in 1:length(models45)){
+  x=models45[[i]]
+  x=(as.data.frame(VarCorr(x))[,c(1,4)][1,2]/
+  (as.data.frame(VarCorr(x))[,c(1,4)][1,2]+
+     (as.data.frame(VarCorr(x))[,c(1,4)][3,2]/3)))*100
+  x=as.numeric(x)
+  hert15=c(hert15,x)
+}
+hert15=cbind(names(models45),round(hert15,5))
+hert15=as.data.frame(hert15)
+names(hert15)<-c("Trait","Heritability")
+hert15$Heritability=as.numeric(as.character(hert15$Heritability))
+barchart(Trait~Heritability,data=hert15)
+hert15
+```
+
+### Comparison of Heritability
+
+```{r,warning=FALSE,message=FALSE}
+#this creates a dataset that subsets the values from the previous calculations
+hert2=cbind(hert1,hert11[,2],hert14[,2],hert15[,2])
+names(hert2)<-c("Trait","Heritability","Mean-line basis","Environment","SE-Pendelton")
+hert2
+```
+
+#### Plot of Heritability
+
+```{r,warning=FALSE,message=FALSE}
+plot(hert2)
+```
+
+#### Comparison of MSE
+
+A good way to compare models is to calculate the mean squared error of the residuals. These MSEs were run on Test weight for model selection because test weight was normally distributed and had no missing data.
+
+```{r,warning=FALSE,message=FALSE}
+#Mean-square error is a good way to measure the error for models, the smaller it is the better fit the model is.
+MSE1 <- mean((predict(models4$TWT, qdata,type = "response") - qdata$TWT)^2)
+MSE2 <- mean((predict(models41$TWT, qdata,type = "response") - qdata$TWT)^2)
+MSE5 <- mean((predict(models44$TWT, qdata,type = "response") - qdata$TWT)^2)
+
+name=c("No GE","GE-0","ENV-0")
+dat_mse=cbind(name,rbind(MSE1,MSE2,MSE5))
+colnames(dat_mse)<-c("Model","MSE")
+dat_mse
+```
+
+### Best model was the Mean-line basis version with interactions
+
+### Plot Residuals and Mean Square Error
+
+```{r,warning=FALSE,message=FALSE}
+result = vector("list", length(models41))
+#This is a loop to calculate the MSE for each trait.
+for(i in 1:length(models41)){
+  result[[i]] = tryCatch(mean((predict(models41[[i]], qdata,type = "response") - qdata[[12+i]])^2), 
+                         error = function(e) paste("something wrong here"))
+}
+```
+
+Some of the variables having missing data which messes up the prediction to calculate the MSE
+
+```{r,warning=FALSE,message=FALSE}
+#par(mfrow=c(2,2))
+#This plots the predicted vs residual values to explore heterodascasity and the validation of the assumption for mixed linear models must have normally distributed residual error. Any type of  pattern is a sign of lack of fit and increased error. This may show that the assumptions have been violated.
+for(i in 1:length(models41)){
+  z=models41[[i]]
+  print(plot(z,main=names(models41)[i],xlab=as.character(result[[i]])))
+}
+```
+
+### Amount of LInes with calculateble BLUPs for each trait.
+
+```{r,warning=FALSE,message=FALSE}
+for(i in 1:length(models41)){
+  z=models41[[i]]
+  rr1 <- ranef(z)
+  resline=rr1$NAMET
+  print(length(rownames(resline)))
+}
+```
+
+
+#### BLUPs for each trait
+
+```{r,warning=FALSE,message=FALSE}
+#I built these loops to extract the random predicted effects or BLUPs for each trait using the mean-line basis heritability multi-environment model above. What you want your blups to form a normally distributed histogram.
+BLUEs=list()
+for(i in 1:length(models41)){ #Extract the random and fixed effect for each model and line.
+  z=models41[[i]]
+  rr1 <- ranef(z)
+  mu=fixef(z)[[1]]
+  resline=rr1$NAMET
+## Creating plots with the BLUPs
+# Create a numeric vector with the BLUP for each line
+  LINEBLUP = resline[,1] #create a vector of just the predicted effects
+  BLUPs=c()
+for(j in 1:length(LINEBLUP)){ #adds the predicted effect of each line to the populatio mean to have the BLUP predicted effect
+  x=resline[j,1]
+  y=x+mu
+  BLUPs=c(BLUPs,y)
+}
+resline=cbind(resline,BLUPs) #create a data frame for all of the BLUPs for each trait and line
+resline1=as.data.frame(resline[,2])
+rownames(resline1)=rownames(resline)
+d <- cbind(rownames(resline1), data.frame(resline1, row.names=NULL))
+names(d)<-c("NAMET",names(models41)[i])
+BLUEs[[names(models41)[i]]]<-d
+}
+
+
+
+
+BLUEz=qdata[,c(6,7,8,10)]
+for(i in 1:length(models41)){
+  k=BLUEs[[i]]
+  BLUEz=left_join(BLUEz,k,by=c("NAMET"))
+}
+
+BLUEz1=aggregate(BLUEz[,5:28],list(BLUEz$NAMET),mean)
+names(BLUEz1)[names(BLUEz1) == "Group.1"] <- "NAMET"
+BLUEz1$NAMET=as.factor(BLUEz1$NAMET)
+# Create a histogram with the BLUP for each line
+par(mfrow=c(2,2))
+for(i in 2:length(BLUEz1)){
+  j=BLUEz1[,c(1,i)]
+  j=j[complete.cases(j),]
+  hist(j[,2],main=names(BLUEz1)[i],xlab="BLUPs",col="brown",na.rm=TRUE)
+}
+
+## Compare BLUP to line averages on a scatterplot
+```
+
+#### Histograms for line averages
+```{r}
+qnamet=aggregate(qdata[,12:35],list(qdata$NAMET),mean)
+names(qnamet)[names(qnamet) == "Group.1"] <- "NAMET"
+qnamet$NAMET=as.factor(qnamet$NAMET)
+# Create a histogram with the line averages for each line
+par(mfrow=c(2,2))
+for(i in 2:length(qnamet)){
+  j=qnamet[,c(1,i)]
+  j=j[complete.cases(j),]
+  hist(j[,2],main=names(qnamet)[i],xlab="BLUPs",col="brown")
+}
+
+```
+
+#### Compare BLUPs with line averages
+```{r}
+## Compare BLUP to line averages on a scatterplot
+par(mfrow=c(2,2))
+for(i in 2:length(qnamet)){
+  j=qnamet[,c(1,i)]
+  k=BLUEz1[,c(1,i)]
+  plot(j[,2], k[,2], col="blue",main=names(qnamet)[i],ylab="BLUPs",xlab="line mean")
+}
+```
+
+
+You can see that a normal mixed linear model may not be the correct model for each traits. Traits such as mmicrosd clearly do not follow a normal distribution. Therefore, we can try genearlized models or generalized mixed linear models using glm and glmer, respectively. Also, you can use additive spline models,or GEE models to account for non-normal distribution. Also, using a log distribution or transformation may help. You may also use non-parametric regression models such as principal component regression or partial least squares.
+
+## Generalized Linear Mixed Model
+```{r}
+library(glmmTMB)
+m2 <- glmmTMB(I(microsd+10)~(1|NAMET)+(1|LOCATION)+(1|year0)+(1|NAMET:LOCATION)+(1|NAMET:year0), family=nbinom2, qdata)
+summary(m2)
+  #z=m2
+  #rr1 <- ranef(z)
+  #mu=fixef(z)[[1]]
+  #rr1$zi
+  #resline=rr1['NAMET']
+  #resline
+  #LINEBLUP = resline[,1]
+  #BLUPs=c()
+  #x=resline[j,1]
+  #y=x+mu
+  #BLUPs=c(BLUPs,y)
+```
+
+## Model Selection (microsd)
+```{r}
+library(glmulti)
+srt.model <-
+  glmulti(microsd ~  NAMET+LOCATION+year0, 
+          data = qdata,
+          level = 2,               #interactions considered
+          method = "h",            #Exhaustive approach
+          crit = "aic",            #AIC as criteria
+          confsetsize = 100,       # Keep 100 best models
+          plotty = T, 
+          report =T,   #plot or interim reports
+          fitfunction = "glm")
+```
+
+```{r}
+AIC <- rep(0, length(srt.model@formulas))
+MODEL <- rep(NA, length(srt.model@formulas))
+AUC <- rep(0, length(srt.model@formulas))
+RSQUARED <- rep(0, length(srt.model@formulas))
+for(i in 1:length(srt.model@formulas)){
+  fit <- glm(paste(as.character(srt.model@formulas[i])), data =qdata)
+  MODEL[i] <- paste(as.character(srt.model@formulas[i]))
+  AIC[i] <- fit$aic
+  predictpr <- predict(fit, type = "response")
+  #ROC <- pROC::roc(qdata$microsd ~ predictpr)
+  #AUC[i] <- pROC::auc(ROC)
+  RSQUARED[i] <- 1 - (fit$deviance/fit$null.deviance)
+}
+INDEX <- seq(1:length(srt.model@formulas))
+srt.model.fits <- data.frame(INDEX, MODEL, AIC, RSQUARED, AUC)
+srt.model.fits$MODEL <- as.character(srt.model.fits$MODEL)
+srt.model.fits$AIC <- as.numeric(srt.model.fits$AIC)
+srt.model.fits$RSQUARED <- as.numeric(srt.model.fits$RSQUARED)
+srt.model.fits$AUC <- as.numeric(srt.model.fits$AUC)
+srt.model.fits
+```
+
+## Model Selection (TWT)
+```{r}
+library(glmulti)
+srt.model <-
+  glmulti(TWT ~  NAMET+LOCATION+year0, 
+          data = qdata,
+          level = 2,               #interactions considered
+          method = "h",            #Exhaustive approach
+          crit = "aic",            #AIC as criteria
+          confsetsize = 100,       # Keep 100 best models
+          plotty = T, 
+          report =T,   #plot or interim reports
+          fitfunction = "glm")
+```
+
+```{r}
+AIC <- rep(0, length(srt.model@formulas))
+MODEL <- rep(NA, length(srt.model@formulas))
+AUC <- rep(0, length(srt.model@formulas))
+RSQUARED <- rep(0, length(srt.model@formulas))
+for(i in 1:length(srt.model@formulas)){
+  fit <- glm(paste(as.character(srt.model@formulas[i])), data =qdata)
+  MODEL[i] <- paste(as.character(srt.model@formulas[i]))
+  AIC[i] <- fit$aic
+  predictpr <- predict(fit, type = "response")
+  #ROC <- pROC::roc(qdata$microsd ~ predictpr)
+  #AUC[i] <- pROC::auc(ROC)
+  RSQUARED[i] <- 1 - (fit$deviance/fit$null.deviance)
+}
+INDEX <- seq(1:length(srt.model@formulas))
+srt.model.fits <- data.frame(INDEX, MODEL, AIC, RSQUARED, AUC)
+srt.model.fits$MODEL <- as.character(srt.model.fits$MODEL)
+srt.model.fits$AIC <- as.numeric(srt.model.fits$AIC)
+srt.model.fits$RSQUARED <- as.numeric(srt.model.fits$RSQUARED)
+srt.model.fits$AUC <- as.numeric(srt.model.fits$AUC)
+srt.model.fits
+```
+
+
+## How does the variation due to environment differ among the traits?
+
+### All Environmental and Residual variaton for each trait
+
+```{r,warning=FALSE,message=FALSE}
+#Extact all environmental variation
+envar=c()
+for(i in 1:length(models41)){
+  x=models41[[i]]
+  x=(((as.data.frame(VarCorr(x))[,c(1,4)][4,2])+
+    (as.data.frame(VarCorr(x))[,c(1,4)][5,2])+
+    (as.data.frame(VarCorr(x))[,c(1,4)][6,2]))/
+    sum((as.data.frame(VarCorr(x))[,c(1,4)][,2])))*100
+  envar=c(envar,x)
+}
+envar=cbind(names(models41),round(envar,5))
+envar=as.data.frame(envar)
+names(envar)<-c("Trait","EnVar")
+barchart(Trait~EnVar,data=envar)
+envar
+```
+
+### Mean-line basis and Environmental Variation
+
+```{r,warning=FALSE,message=FALSE}
+hert11
+hert11$Heritability=as.numeric(as.character(hert11$Heritability))
+envdif=c()
+for(i in 1:length(models41)){
+  y=hert11$Heritability[i]
+  z=100-y
+  
+  envdif=c(envdif,z)
+}
+hert21=cbind(hert11,envar[,2],envdif)
+names(hert21)<-c("Trait","Mean-line basis-Year0","Env Variation","Difference Env")
+hert21
+```
+
+
+### AMMI
+
+It is only calculatable for data without missing values. Test Weight was a try, but not the best method for unbalanced data.
+
+```{r,warning=FALSE,message=FALSE,eval=FALSE}
+#AMMI is one of my favorite ways to display GEI but this function through agricolae only can display balanced data for a single trait.
+library(agricolae)
+model<- AMMI(qdata$LOCATION, qdata$NAMET, qdata$year0, qdata$TWT, console=FALSE)
+model$ANOVA
+#model$genXenv
+#model$means
+#model$biplot
+#summary(model)
+plot(model,main= "Biplot for TWT")
+plot(model, type=2,main= "Triplot for TWT")
+plot(model, first=0,second=1,main= "PC1 vs Yield for TWT")
+plot(model,main= "Biplot Contour for TWT")
+AMMI.contour(model,distance=0.7,shape=8,col="red",lwd=2,lty=5)
+Idxbu=index.AMMI(model)
+print(Idxbu[order(Idxbu[,3]),])
+print(Idxbu[order(Idxbu[,4]),])
+```
+
+
+###Principal Components
+```{r,warning=FALSE,message=FALSE}
+#Principal components has to use only balanced data with no missing values. Therefore I used the means for each line
+set.seed(702)
+qdhe=aggregate(qdata[,12:35],list(qdata$LOCATION),mean,na.rm=TRUE)
+qdhne=qdhe[,-1]
+rownames(qdhne)=qdhe[,1]
+qdhn2e=qdhne[complete.cases(qdhne),]
+
+pr.out1e <- prcomp(qdhn2e)
+prout1e=as.data.frame(pr.out1e$rotation)
+pnam1e=rownames(prout1e)
+
+pr.out1e1 <- prcomp(t(qdhn2e))
+prout1e1=as.data.frame(pr.out1e1$rotation)
+pnam1e1=rownames(prout1e1)
+
+gei=rbind(prout1e,prout1e1)
+gei1=rownames(gei)
+
+ggplot(gei,aes(x=gei$PC1,y=gei$PC2,col=gei1))+geom_point(position="jitter")+geom_text(aes(label=gei1),size=3,hjust=1, vjust=1)+ggtitle("Evaluation of traits across environments")+xlab("PC1")+ylab("PC2")+geom_hline(yintercept=0,linetype="dashed", color = "black", size=1)+geom_vline(xintercept=0,linetype="dashed", color = "black", size=1)
+```
+
+## Are there any pedigrees that perform particularly well or particularly bad?  Any clusters?
+
+This section was focused on clustering and principal components. Good way to visualize overall correlations.
+
+```{r,warning=FALSE,message=FALSE}
+qdh=aggregate(qdata[,12:35],list(qdata$pedigree),mean,na.rm=TRUE)
+qdhn=qdh[,-1]
+rownames(qdhn)=qdh[,1]
+
+qdh1=aggregate(qdata[,12:35],list(qdata$NAMET),mean,na.rm=TRUE)
+qdhn1=qdh1[,-1]
+rownames(qdhn1)=qdh1[,1]
+
+```
+
+
+### Using hierarchical clustering with complete linkage and Euclidean distance for Pedigrees.
+
+#### Complete Clustering
+
+```{r,warning=FALSE,message=FALSE}
+library(ggdendro)
+library(ggplot2)
+set.seed(702)
+hc.complete <- hclust(dist(qdhn), method = "complete")
+ggdendrogram(hc.complete)+labs(title="Complete Cluster Dendrogram")
+```
+
+#### Complete Clustering with Scaling
+
+```{r,warning=FALSE,message=FALSE}
+set.seed(702)
+sd.data <- scale(qdhn)
+hc.complete.sd <- hclust(dist(sd.data), method = "complete")
+ggdendrogram(hc.complete.sd)+labs(title="Complete Cluster Dendogram with Scaling")
+```
+
+### Clustering for the Traits
+
+#### Complete Clustering
+
+```{r,warning=FALSE,message=FALSE}
+set.seed(702)
+qdhn2=qdhn[complete.cases(qdhn),]
+hc.complete <- hclust(as.dist(1 - cor(qdhn2)), method = "complete")
+plot(hc.complete,main="Complete Cluster Dendogram")
+```
+
+#### Single Clustering
+
+```{r,warning=FALSE,message=FALSE}
+set.seed(702)
+hc.single <- hclust(as.dist(1 - cor(qdhn2)), method = "single")
+plot(hc.single,main="Single Cluster Dendrogram")
+```
+
+#### Average Clustering
+
+```{r,warning=FALSE,message=FALSE}
+set.seed(702)
+hc.average <- hclust(as.dist(1 - cor(qdhn2)), method = "average")
+plot(hc.average,main="Average Cluster Dendrogram")
+```
+
+### Principal Components
+
+#### Raw clustering
+
+```{r,warning=FALSE,message=FALSE}
+set.seed(702)
+pr.out <- prcomp(qdhn2)
+prout=as.data.frame(pr.out$rotation)
+pnam=rownames(prout)
+
+ggplot(prout,aes(x=prout$PC1,y=prout$PC2,col=pnam))+geom_point(position="jitter")+geom_text(aes(label=pnam),size=3,hjust=1, vjust=1)+ggtitle("Traits across Lines")+xlab("PC1")+ylab("PC2")+geom_hline(yintercept=0,linetype="dashed", color = "black", size=1)+geom_vline(xintercept=0,linetype="dashed", color = "black", size=1)
+```
+
+#### We'll try again but with Correlations.
+```{r,warning=FALSE,message=FALSE}
+set.seed(702)
+pr.out1 <- prcomp(1-cor(qdhn2))
+prout1=as.data.frame(pr.out1$rotation)
+pnam1=rownames(prout1)
+
+ggplot(prout1,aes(x=prout1$PC1,y=prout1$PC2,col=pnam1))+geom_point(position="jitter")+geom_text(aes(label=pnam1),size=3,hjust=1, vjust=1)+ggtitle("Traits across Line correlations")+xlab("PC1")+ylab("PC2")+geom_hline(yintercept=0,linetype="dashed", color = "black", size=1)+geom_vline(xintercept=0,linetype="dashed", color = "black", size=1)
+```
+
+#### Try with Pedigree
+
+```{r,warning=FALSE,message=FALSE}
+set.seed(702)
+qdh3=aggregate(qdata[,12:35],list(qdata$LOCATION),mean,na.rm=TRUE)
+qdhn3=qdh3[,-1]
+rownames(qdhn3)=qdh3[,1]
+qdhn3e=qdhne[complete.cases(qdhn3),]
+
+pr.out2 <- prcomp(qdhn3e)
+prout2=as.data.frame(pr.out2$rotation)
+pnam2=rownames(prout2)
+
+ggplot(prout2,aes(x=prout2$PC1,y=prout2$PC2,col=pnam2))+geom_point(position="jitter")+geom_text(aes(label=pnam2),size=3,hjust=1, vjust=1)+ggtitle("Traits across Pedigrees")+xlab("PC1")+ylab("PC2")+geom_hline(yintercept=0,linetype="dashed", color = "black", size=1)+geom_vline(xintercept=0,linetype="dashed", color = "black", size=1)
+```
+
+
+```{r,warning=FALSE,message=FALSE}
+
+pr.out3 <- prcomp(1-cor(qdhn3e))
+prout3=as.data.frame(pr.out3$rotation)
+pnam3=rownames(prout3)
+
+ggplot(prout3,aes(x=prout3$PC1,y=prout3$PC2,col=pnam3))+geom_point(position="jitter")+geom_text(aes(label=pnam3),size=3,hjust=1, vjust=1)+ggtitle("Traits across Pedigree correlations")+xlab("PC1")+ylab("PC2")+geom_hline(yintercept=0,linetype="dashed", color = "black", size=1)+geom_vline(xintercept=0,linetype="dashed", color = "black", size=1)
+```
+
+
+
+# Differing Traits
+
+```{r,warning=FALSE,message=FALSE}
+set.seed(702)
+total.load <- apply(pr.out$rotation, 1, sum)
+index <- order(abs(total.load), decreasing = TRUE)
+total.load[index[1:10]]
+```
+
+These are the 10 most different traits using principal components.
+
+
+
+## What should I select?  
+A good club wheat has high cake volume, low gluten strength, high test weight, high break flour and high flour yield.  Our stakeholders have asked me to increase kernel size and test weight and reduce LDOPA as well.  Can you make any suggestions for crosses that I might want to make?
+
+
+### Lets compare BLUPs
+
+We want to focus on cake volume (CAVOL), Gluten Strength (Mircrosd, FSR-L), Test weight (TWT), High Break flour (BKFYELD), kernel size (SKSIZE), LDOPA (LDOPA).
+
+```{r,warning=FALSE,message=FALSE,eval=FALSE}
+bp=BLUEz[,c(1:4,8,11,14,15,20,24,26,28)]
+bp=bp %>% mutate(msd_rank = rank(bp$microsd, ties.method = 'first'))
+bp=bp %>% mutate(fsrl_rank = rank(bp$FSR_L, ties.method = 'first'))
+bp=bp %>% mutate(ldopa_rank = rank(bp$LDOPA, ties.method = 'first'))
+bp=bp %>% mutate(twt_rank = dense_rank(desc(bp$TWT)))
+bp=bp %>% mutate(sksize_rank = dense_rank(desc(bp$SKSIZE)))
+bp=bp %>% mutate(fy_rank = dense_rank(desc(bp$FYELD)))
+bp=bp %>% mutate(bkfy_rank = dense_rank(desc(bp$BKFYELD)))
+bp=bp %>% mutate(cavol_rank = dense_rank(desc(bp$CAVOL)))
+bp$avg=rowMeans(bp[,13:20])
+print(head(bp[order(bp[,21]),]))
+rnks=bp[,c(1,13:21)]
+print(head(rnks[order(rnks[,10]),]))
+```
+
+#### Ranks of Lines
+
+```{r,warning=FALSE,message=FALSE}
+bp1=BLUEz[,c(1:4,8,11,14,15,20,24,26,28)]
+bp2=aggregate(bp1[,5:12],list(bp1$NAMET),mean)
+bp2=bp2 %>% mutate(msd_rank = rank(bp2$microsd, ties.method = 'first')) #For traits with low as better
+bp2=bp2 %>% mutate(fsrl_rank = rank(bp2$FSR_L, ties.method = 'first'))
+bp2=bp2 %>% mutate(ldopa_rank = rank(bp2$LDOPA, ties.method = 'first')) #For traits with high as better
+bp2=bp2 %>% mutate(twt_rank = dense_rank(desc(bp2$TWT)))
+bp2=bp2 %>% mutate(sksize_rank = dense_rank(desc(bp2$SKSIZE)))
+bp2=bp2 %>% mutate(fy_rank = dense_rank(desc(bp2$FYELD)))
+bp2=bp2 %>% mutate(bkfy_rank = dense_rank(desc(bp2$BKFYELD)))
+bp2=bp2 %>% mutate(cavol_rank = dense_rank(desc(bp2$CAVOL)))
+bp2$avg=rowMeans(bp2[,10:17])
+#print(head(bp2[order(bp2[,18]),]))
+rnks2=bp2[,c(1,10:18)]
+print(head(rnks2[order(rnks2[,10]),]))
+```
+
+#### Ranks of Pedigrees
+
+```{r,warning=FALSE,message=FALSE}
+bp3=aggregate(bp1[,5:12],list(bp1$pedigree),mean)
+bp3=bp3 %>% mutate(msd_rank = rank(bp3$microsd, ties.method = 'first')) 
+bp3=bp3 %>% mutate(fsrl_rank = rank(bp3$FSR_L, ties.method = 'first'))
+bp3=bp3 %>% mutate(ldopa_rank = rank(bp3$LDOPA, ties.method = 'first'))
+bp3=bp3 %>% mutate(twt_rank = dense_rank(desc(bp3$TWT))) 
+bp3=bp3 %>% mutate(sksize_rank = dense_rank(desc(bp3$SKSIZE)))
+bp3=bp3 %>% mutate(fy_rank = dense_rank(desc(bp3$FYELD)))
+bp3=bp3 %>% mutate(bkfy_rank = dense_rank(desc(bp3$BKFYELD)))
+bp3=bp3 %>% mutate(cavol_rank = dense_rank(desc(bp3$CAVOL)))
+bp3$avg=rowMeans(bp3[,10:17])
+#print(head(bp3[order(bp3[,18]),]))
+rnks3=bp3[,c(1,10:18)]
+print(head(rnks3[order(rnks3[,10]),]))
+```
+
+#### Lines
+
+#### Ranks for Good Club Wheat
+
+```{r,warning=FALSE,message=FALSE}
+bp2$cavg=rowMeans(bp2[,c(10,11,13,15,16,17)])
+#print(head(bp2[order(bp2[,19]),]))
+rnks4=bp2[,c(1,18:19)]
+print(head(rnks4[order(rnks4[,3]),]))
+```
+
+#### Ranks for Stakeholder and Parents
+
+```{r,warning=FALSE,message=FALSE}
+bp2$pavg=rowMeans(bp2[,c(12:14)])
+#print(head(bp2[order(bp2[,20]),]))
+rnks5=bp2[,c(1,18:20)]
+print(head(rnks5[order(rnks5[,4]),]))
+```
+
+#### Pedigrees
+
+#### Ranks for Good Club Wheat
+
+```{r,warning=FALSE,message=FALSE}
+bp3$cavg=rowMeans(bp3[,c(10,11,13,15,16,17)])
+#print(head(bp3[order(bp3[,19]),]))
+rnks4=bp3[,c(1,18:19)]
+print(head(rnks4[order(rnks4[,3]),]))
+```
+
+#### Ranks for Stakeholder and Parents
+
+```{r,warning=FALSE,message=FALSE}
+bp3$pavg=rowMeans(bp3[,c(12:14)])
+#print(head(bp3[order(bp3[,20]),]))
+rnks5=bp3[,c(1,18:20)]
+print(head(rnks5[order(rnks5[,4]),]))
+```
